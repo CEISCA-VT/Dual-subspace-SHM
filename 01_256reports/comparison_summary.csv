@@ -1,0 +1,3 @@
+Scenario,Registered,Success,Rate%,MeanIntra
+Single,300,298,99.33333333333333,9.813559322033898
+Multi,300,300,100.0,5.450847457627119
