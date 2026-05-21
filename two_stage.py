@@ -102,6 +102,56 @@ def collect_device_files(folder):
     return device_files
 
 # ---------------------------
+# Plot Helpers
+# ---------------------------
+def plot_combined_pdf(intra, inter, title, outpath):
+    plt.figure(figsize=(6, 4))
+
+    intra = np.array(intra)
+    inter = np.array(inter)
+
+    if len(intra) == 0 or len(inter) == 0:
+        return
+
+    max_val = max(inter.max(), intra.max())
+    if max_val == 0: max_val = 1  # Failsafe for empty max
+    bins = np.linspace(0, max_val, 25)
+
+    inter_color = '#1f77b4'   # blue
+    intra_color = '#d62728'   # red
+
+    # Inter
+    plt.hist(inter, bins=bins, density=True,
+             alpha=0.6, label="Inter-HD",
+             edgecolor='black', linewidth=0.8,
+             color=inter_color)
+
+    # Intra
+    plt.hist(intra, bins=bins, density=True,
+             alpha=0.6, label="Intra-HD",
+             edgecolor='black', linewidth=0.8,
+             color=intra_color)
+
+    # Means
+    plt.axvline(inter.mean(), linestyle='--', linewidth=2,
+                color=inter_color,
+                label=f'Inter Mean = {inter.mean():.2f}')
+
+    plt.axvline(intra.mean(), linestyle='--', linewidth=2,
+                color=intra_color,
+                label=f'Intra Mean = {intra.mean():.2f}')
+
+    plt.xlabel("Hamming Distance")
+    plt.ylabel("Probability Density")
+    plt.title(title)
+    plt.legend()
+    plt.grid(True, linestyle='--', linewidth=0.5, alpha=0.6)
+
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=600, bbox_inches='tight')
+    plt.close()
+
+# ---------------------------
 # PCA & Auth Logic
 # ---------------------------
 def choose_pca_components(X_rows, X_cols, desired_bits):
@@ -163,21 +213,27 @@ def run_authentication(model, binary_ids, device_files, test_index, excluded):
             if o_dev != dev:
                 inter.append(hamming_distance(gen_bin, o_bin))
                 
-    return np.mean(intra) if intra else 0, np.mean(inter) if inter else 0
+    avg_intra = np.mean(intra) if intra else 0
+    avg_inter = np.mean(inter) if inter else 0
+    return avg_intra, avg_inter, intra, inter
 
 def run_experiment_permutation(device_files, start, end, n_pts, bit_length):
     ref_freq = np.geomspace(start, end, n_pts)
     run_metrics = []
+    all_intra, all_inter = [], []
 
     for _ in range(RUNS_PER_EXP):
         # Multi-sweep only for optimization scoring to ensure stability
         bin_ids_m, model_m = build_ids(device_files, PREFERRED_MULTI_TRAIN_INDICES, ref_freq, bit_length)
-        intra_m, inter_m = run_authentication(model_m, bin_ids_m, device_files, PREFERRED_MULTI_AUTH_INDEX, EXCLUDED_DEVICES)
+        intra_m, inter_m, intra_list, inter_list = run_authentication(model_m, bin_ids_m, device_files, PREFERRED_MULTI_AUTH_INDEX, EXCLUDED_DEVICES)
+        
         run_metrics.append((intra_m, inter_m))
+        all_intra.extend(intra_list)
+        all_inter.extend(inter_list)
         
     avg_intra = np.mean([r[0] for r in run_metrics])
     avg_inter = np.mean([r[1] for r in run_metrics])
-    return avg_intra, avg_inter
+    return avg_intra, avg_inter, all_intra, all_inter
 
 # ---------------------------
 # Execution
@@ -203,14 +259,16 @@ def main():
         stage1_scores = []
 
         for start, end in CANDIDATE_WINDOWS:
-            intra, inter = run_experiment_permutation(device_files, start, end, STAGE1_N_POINTS, bit_length)
+            intra, inter, list_intra, list_inter = run_experiment_permutation(device_files, start, end, STAGE1_N_POINTS, bit_length)
             score = inter - intra # Separation Score
             
             stage1_scores.append({
                 "Window": f"{start//1000}k-{end//1000}k",
                 "Start": start, "End": end,
                 "Intra": intra, "Inter": inter,
-                "Score": score
+                "Score": score,
+                "List_Intra": list_intra,
+                "List_Inter": list_inter
             })
             
             results_log.append({
@@ -226,6 +284,11 @@ def main():
         print(f"\n>> Top {TOP_K_WINDOWS} Windows Selected for Stage 2:")
         for w in top_windows:
             print(f"   {w['Window']} (Score: {w['Score']:.2f})")
+            
+            # Plot the distributions for the Top K winning windows
+            plot_title = f"Stage 1: {w['Window']} (N={STAGE1_N_POINTS}, {bit_length}b)"
+            plot_filename = f"Stage1_Window_{w['Window']}_{bit_length}b.png"
+            plot_combined_pdf(w["List_Intra"], w["List_Inter"], plot_title, os.path.join(REPORT_DIR, plot_filename))
 
         # ---------------------------------------------------------
         # STAGE 2: SAMPLING REDUCTION
@@ -238,7 +301,7 @@ def main():
             baseline_score = w["Score"]
             
             for n_pts in STAGE2_N_POINTS:
-                intra, inter = run_experiment_permutation(device_files, start, end, n_pts, bit_length)
+                intra, inter, list_intra, list_inter = run_experiment_permutation(device_files, start, end, n_pts, bit_length)
                 score = inter - intra
                 degrad_pct = ((baseline_score - score) / baseline_score) * 100 if baseline_score else 0
                 
@@ -247,6 +310,12 @@ def main():
                     "N_Points": n_pts, "Intra_Avg": intra, "Inter_Avg": inter, "Separation_Score": score
                 })
                 print(f"    N={n_pts:<4} | Intra: {intra:05.2f} | Inter: {inter:05.2f} | Score: {score:05.2f} | Degradation: {degrad_pct:>5.1f}%")
+
+                # If the result is still "really good" (< 5% degradation), save its plot
+                if degrad_pct < 5.0:
+                    plot_title = f"Stage 2: {w['Window']} (N={n_pts}, {bit_length}b)"
+                    plot_filename = f"Stage2_Window_{w['Window']}_N{n_pts}_{bit_length}b.png"
+                    plot_combined_pdf(list_intra, list_inter, plot_title, os.path.join(REPORT_DIR, plot_filename))
 
         # Export Stage Data
         df = pd.DataFrame(results_log)
