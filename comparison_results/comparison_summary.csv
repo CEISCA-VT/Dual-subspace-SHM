@@ -1,0 +1,13 @@
+file,status,python_exists,matlab_exists,rows_python,rows_matlab,same_row_count,same_columns,numeric_columns_checked,string_columns_checked,numeric_max_abs_diff,numeric_mean_abs_diff,string_match_pct
+comparison_summary.csv,missing,True,False,,,,,,,,,
+comparison_summary_128bit.csv,ok,,,2.0,2.0,True,False,5.0,1.0,5.0,1.1233898305084753,100.0
+comparison_summary_256bit.csv,ok,,,2.0,2.0,True,False,5.0,1.0,29.0,5.281929595827925,100.0
+comparison_summary_64bit.csv,ok,,,2.0,2.0,True,False,5.0,1.0,5.0,1.0428773879031723,100.0
+multi_sweep_metrics.csv,missing,True,False,,,,,,,,,
+multi_sweep_metrics_128bit.csv,ok,,,295.0,295.0,True,True,6.0,1.0,8.0,0.32937853107344633,100.0
+multi_sweep_metrics_256bit.csv,ok,,,295.0,295.0,True,True,6.0,1.0,23.0,0.8785310734463276,100.0
+multi_sweep_metrics_64bit.csv,ok,,,295.0,295.0,True,True,6.0,1.0,5.0,0.13785310734463277,100.0
+single_sweep_metrics.csv,missing,True,False,,,,,,,,,
+single_sweep_metrics_128bit.csv,ok,,,295.0,295.0,True,True,6.0,1.0,81.0,0.5954802259887005,100.0
+single_sweep_metrics_256bit.csv,ok,,,295.0,295.0,True,True,6.0,1.0,148.0,1.4344632768361583,100.0
+single_sweep_metrics_64bit.csv,ok,,,295.0,295.0,True,True,6.0,1.0,81.0,0.3022598870056497,100.0
