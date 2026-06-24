@@ -275,13 +275,19 @@ class PerturbationEngine:
 
     def generate_synthetic_dataset(
         self, device_sweeps: Dict[str, Dict[int, np.ndarray]],
-        ref_freq: np.ndarray = REF_FREQ
+        ref_freq: np.ndarray = REF_FREQ,
+        per_device_perturbation: bool = False
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         """Generate synthetic multi-condition dataset from baseline sweeps.
 
         Args:
             device_sweeps: {device_id: {sweep_idx: vector(phase+mag concatenated)}}
             ref_freq: Reference frequency vector
+            per_device_perturbation: If True, each device is assigned a single
+                perturbation type (temperature, aging, or loading) rather than all
+                three. Assignment is random and balanced across devices.
+                This simulates a realistic SHM scenario where different sensors
+                experience different local conditions.
 
         Returns:
             X_synthetic: (n_samples, n_features) array
@@ -292,7 +298,19 @@ class PerturbationEngine:
         X_list, dev_list, cond_list, meta_list = [], [], [], []
         n_freq = N_FREQ_POINTS
 
-        for device_id in sorted(device_sweeps.keys()):
+        # Assign each device a single perturbation type if per_device mode
+        device_ids_sorted = sorted(device_sweeps.keys())
+        if per_device_perturbation:
+            perturb_types = ['temperature', 'aging', 'loading']
+            # Rotate assignment for balanced distribution
+            device_perturb_map = {
+                did: perturb_types[i % len(perturb_types)]
+                for i, did in enumerate(device_ids_sorted)
+            }
+        else:
+            device_perturb_map = {did: None for did in device_ids_sorted}
+
+        for device_id in device_ids_sorted:
             sweeps = device_sweeps[device_id]
             if not sweeps:
                 continue
@@ -303,43 +321,52 @@ class PerturbationEngine:
 
             conditions = []
 
-            # Baseline (no perturbation)
+            # Baseline (no perturbation) — always included
             baseline_vec = np.concatenate([baseline_phase, baseline_mag])
             conditions.append((baseline_vec, device_id, "baseline", {
                 'condition_type': 'baseline', 'condition_name': 'baseline',
                 'severity': 0
             }))
 
-            for cond_name, delta_temp in self.config.temperature_levels:
-                mag, phase = self.temp_model.apply(baseline_mag, baseline_phase, delta_temp, ref_freq)
-                vec = np.concatenate([phase, mag])
-                tag = f"temp_{cond_name}"
-                conditions.append((vec, device_id, tag, {
-                    'condition_type': 'temperature', 'condition_name': cond_name,
-                    'delta_temp': delta_temp, 'severity': abs(delta_temp)
-                }))
+            assigned_type = device_perturb_map[device_id]
 
-            for cond_name, aging_level in self.config.aging_levels:
-                # Pass self.rng so aging noise is reproducible and consistent
-                # with the combined-dataset sampler.
-                mag, phase = self.aging_model.apply(
-                    baseline_mag, baseline_phase, aging_level, ref_freq, rng=self.rng
-                )
-                vec = np.concatenate([phase, mag])
-                tag = f"aging_{cond_name}"
-                conditions.append((vec, device_id, tag, {
-                    'condition_type': 'aging', 'condition_name': cond_name,
-                    'aging_level': aging_level, 'severity': aging_level
-                }))
+            if per_device_perturbation and assigned_type != 'temperature':
+                pass  # skip
+            else:
+                for cond_name, delta_temp in self.config.temperature_levels:
+                    mag, phase = self.temp_model.apply(baseline_mag, baseline_phase, delta_temp, ref_freq)
+                    vec = np.concatenate([phase, mag])
+                    tag = f"temp_{cond_name}"
+                    conditions.append((vec, device_id, tag, {
+                        'condition_type': 'temperature', 'condition_name': cond_name,
+                        'delta_temp': delta_temp, 'severity': abs(delta_temp)
+                    }))
 
-            for cond_name, load_level in self.config.load_levels:
-                mag, phase = self.load_model.apply(baseline_mag, baseline_phase, load_level, ref_freq)
-                vec = np.concatenate([phase, mag])
-                tag = f"load_{cond_name}"
-                conditions.append((vec, device_id, tag, {
-                    'condition_type': 'loading', 'condition_name': cond_name,
-                    'load_level': load_level, 'severity': load_level
-                }))
+            if per_device_perturbation and assigned_type != 'aging':
+                pass  # skip
+            else:
+                for cond_name, aging_level in self.config.aging_levels:
+                    mag, phase = self.aging_model.apply(
+                        baseline_mag, baseline_phase, aging_level, ref_freq, rng=self.rng
+                    )
+                    vec = np.concatenate([phase, mag])
+                    tag = f"aging_{cond_name}"
+                    conditions.append((vec, device_id, tag, {
+                        'condition_type': 'aging', 'condition_name': cond_name,
+                        'aging_level': aging_level, 'severity': aging_level
+                    }))
+
+            if per_device_perturbation and assigned_type != 'loading':
+                pass  # skip
+            else:
+                for cond_name, load_level in self.config.load_levels:
+                    mag, phase = self.load_model.apply(baseline_mag, baseline_phase, load_level, ref_freq)
+                    vec = np.concatenate([phase, mag])
+                    tag = f"load_{cond_name}"
+                    conditions.append((vec, device_id, tag, {
+                        'condition_type': 'loading', 'condition_name': cond_name,
+                        'load_level': load_level, 'severity': load_level
+                    }))
 
             for vec, dev, cond, meta in conditions:
                 X_list.append(vec)

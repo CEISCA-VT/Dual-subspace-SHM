@@ -1,0 +1,202 @@
+===========================================================================
+ PROJECT: PCA Framework — Subspace Separation for Dual-Use SHM
+===========================================================================
+
+--- PROBLEM STATEMENT ---
+
+Piezoelectric impedance sensors (PZTs) can simultaneously measure structural
+health and authenticate the sensor itself from a single impedance sweep. The
+challenge is that impedance spectra mix together:
+  (a) Device-specific manufacturing variation (useful for authentication)
+  (b) Environmental/operational conditions (temperature, aging, loading)
+  (c) Structural damage (stiffness/mass change from cracking)
+
+Goal: Learn orthogonal subspaces such that:
+  - Identity subspace encodes (a) → authenticate sensors
+  - Health/condition subspace encodes (b)+(c) → detect damage
+  - The two subspaces are statistically independent (low HSIC)
+
+--- KEY INNOVATION ---
+
+- Synthetic perturbations: Generate training data by applying controlled
+  perturbations (temperature drift, aging, loading) to real baseline sweeps
+  from a 295-device cohort. No real damage data needed for training.
+- sisPCA (Subspace Independent PCA): Solves for projection U that maximizes
+  variance while minimizing HSIC between identity and condition subspaces.
+  Parameter lambda_contrast controls the trade-off.
+- Cross-dataset transfer: After training on one cohort, the condition subspace
+  generalizes to detect real damage on an unseen sensor from a different
+  dataset (PAMELA) at 0% EER.
+
+--- DATASETS ---
+
+1. 01_master_dataset (cohort):
+   - 295 PZT devices on aluminum substrate
+   - 5 sweeps each = 1475 total sweeps
+   - 10 kHz - 1 MHz, 2001 frequency points (phase + magnitude = 4002 dims)
+
+2. PAMELA (real damage validation):
+   - 1 PZT sensor, unknown structure
+   - 30 sweeps: 6 temperatures (24, 40, 55, 70, 85, 100 C) x 5 damage levels
+     (healthy + D1/D2/D3/D4)
+   - 0 - 125 kHz, 32768 raw points (subsampled to 2000)
+   - Damage is real physical cracking, not synthetic
+   - Different sensor, structure, instrumentation, and frequency range than
+     the cohort
+
+--- CODEBASE FILES ---
+
+File                              Purpose
+----                              -------
+subspace_comparison.py            Main: compares PCA sep F-ratio vs sisPCA
+                                  on 295-device cohort (lines 280-635 are
+                                  guarded by if __name__ == "__main__:")
+pamela_analysis.py                Standalone: sisPCA on PAMELA only (30 sweeps)
+                                  temperature = identity, damage = condition
+combined_cohort_pamela.py         Combined: adds PAMELA as sensor #296,
+                                  trains on cohort + PAMELA baselines,
+                                  tests on PAMELA damaged sweeps
+synthetic_perturbations.py        PerturbationEngine class: generates synthetic
+                                  temp/aging/load perturbations on real sweeps
+
+--- EXPERIMENTS & RESULTS ---
+
+EXPERIMENT 1: Method Comparison (cohort only, 295 devs)
+--------------------------------------------------------
+Setup: sisPCA trained on cohort (295 devs x 5 sweeps) + synthetic perturbations
+  (3 temp levels, 4 aging levels, 4 load levels). PCA pre-reduction to 100 PCs.
+  Evaluate authentication EER (identity subspace) and health EER (condition
+  subspace). Aging levels include severity=0 ("none"), which is physically
+  identical to baseline.
+
+Key insight: The "no-none" EER excludes *none samples.
+
+Results (health EER):
+  PCA sep F-ratio:  17.3% overall, 10.0% no-none
+  sisPCA λ=0.0:     15.8% overall,  0.0% no-none
+  sisPCA λ=0.01:    18.8% overall,  0.0% no-none
+  sisPCA λ=0.05:    15.3% overall,  0.0% no-none
+  sisPCA λ=0.1+:    15-19% overall, 0.0% no-none
+
+  Auth EER: 1.7-7.1% (higher λ = worse auth since subspace is more
+  constrained)
+  Temperature EER: 0.0% at all λ (temp is the strongest signal)
+  Aging EER: 16-24% overall (all overlap is from aging_none)
+  Loading EER: 16-24% overall (all overlap is from load_none)
+
+Interpretation: The "health EER" of 16-24% was entirely driven by
+severity=0 samples being indistinguishable from baseline. The framework
+perfectly detects ANY non-zero perturbation.
+
+EXPERIMENT 2: PAMELA Standalone
+--------------------------------
+Setup: 30 sweeps (6 temps x 5 damage levels). Temperature = identity
+  variable (confound). Damage D1-D4 = condition to detect.
+  Only 1 healthy baseline per temperature -> per-temp EER infeasible.
+  EER resolution floor = 1/6 = 16.7% (only 6 healthy-damaged pairs).
+
+Results (best: λ=10.0):
+  Health EER overall: 16.7% (hits floor)
+  D4 cross-validated (leave-1-temp-out): 3.3%
+  Others: 10-63%
+
+Interpretation: 30 samples is too few. sisPCA can't learn good subspaces.
+The D4 cross-validated result (3.3%) shows potential but the overall
+result is limited by sample size, not the method.
+
+EXPERIMENT 3: Combined Cohort + PAMELA (KEY RESULT)
+----------------------------------------------------
+Setup: Add PAMELA as sensor #296. Train on cohort synthetic perturbations
+  + PAMELA healthy baselines (1506 total). Evaluate on PAMELA damaged
+  sweeps (24). Frequency common overlap = 10-125 kHz, 200 points.
+
+Results (ALL λ, ALL damage levels):
+  PAMELA Health EER: 0.00%
+  D1 EER: 0.00%, D2: 0.00%, D3: 0.00%, D4: 0.00%
+  Synth EER: 0.17-4.05% (baseline sanity check)
+
+  Every single one of the 24 damaged PAMELA sweeps projects further from
+  baseline than ALL 1506 healthy sweeps. Perfect separation.
+
+Why it works:
+  - Cohort provides 295 unique device identities -> strong identity signal
+  - 1506 baselines give robust Mahalanobis distance estimation
+  - Synthetic perturbations (temp/aging/load) capture general condition
+    variation patterns that transfer to real damage
+  - Real damage produces a stronger impedance signature than synthetic
+    perturbations, so it projects even further into the condition subspace
+
+Why standalone fails but combined succeeds:
+  Standalone: 6 baselines, 1 "identity" (temperature label)
+  Combined:  1506 baselines, 296 identities (295 real + 1 PAMELA)
+  The rich identity signal lets sisPCA better factor out device-specific
+  variation from condition-specific variation.
+
+--- METRICS ---
+
+Health EER: Equal Error Rate in condition subspace. Threshold where false
+  accept (healthy called damaged) = false reject (damaged called healthy).
+  0% = perfect, 50% = random guessing, 100% = perfectly inverted.
+
+Auth EER: Same as above but in identity subspace. Measures if device can
+  be authenticated despite condition perturbations.
+
+HSIC: Hilbert-Schmidt Independence Criterion. Measures dependence between
+  identity and condition subspace projections. Lower = more independent.
+  sisPCA explicitly minimizes this. ~0 = subspaces fully disentangled.
+
+no-none EER: Same Health EER but excludes samples tagged with severity=0
+  ("none" perturbation level). These are physically identical to baseline,
+  so they inflate EER artificially.
+
+Cross-validated EER (PAMELA): Leave-one-temperature-out. Train on 5 temps,
+  test on the 6th held-out temp. Tests generalization across thermal
+  conditions, not fitting per-temp baselines.
+
+--- PUBLISHABILITY (SCORE: 4/10) ---
+
+Strengths:
+- Cross-dataset synthetic-to-real 0% EER transfer is novel and strong
+- "No-none" insight explains away seemingly mediocre 16-24% EER
+- Clean experimental logic with control condition
+
+Missing for publication:
+- No baseline comparisons (PCA, FastICA, PLS commented out)
+- No theoretical justification for why sisPCA generalizes across sensors
+- PAMELA is tiny (30 sweeps) - risk of being called a toy demo
+- No real authentication evaluation (dual-use claim needs demo)
+- Single config: no robustness tests (noise, fewer sensors)
+- Functional but not publication-quality figures
+
+Target venues: MSSP (IF ~8), Structural Health Monitoring (IF ~5.5),
+  IEEE Sensors Journal (IF ~4.3)
+
+--- SETUP NOTES ---
+
+Environment: venv310 (Python 3.10 venv)
+Dependencies: sispca (sisPCA impl), torch 2.12, scikit-learn, pandas,
+  matplotlib, seaborn, scipy
+Config: sispca package installed for subspace learning
+  sisPCA params: n_latent_sub=[20, 380] (ID + HL), linear kernel,
+    eig solver, batch_size=full dataset, max_epochs=3, lr=1.0
+  lambda_contrast tested: 0.0, 0.01, 0.02, 0.03, 0.05, 0.07, 0.1, 0.5,
+    1.0, 10.0
+
+--- CURRENT STATUS ---
+
+Done:
+- __main__ guard added to subspace_comparison.py
+- Per-severity aging EER computed (all 0.00%)
+- no-none EER analysis complete
+- PAMELA standalone analysis complete
+- Combined cohort + PAMELA experiment runs, produces 0% EER
+- Results writeup saved to rq_analysis_reports/sispea_results.md
+
+Not done (next steps):
+- Uncomment and compare PCA/FastICA/PLS on PAMELA transfer task
+- Add noise robustness tests
+- Real authentication demo on PAMELA or similar
+- More real damage datasets for validation
+- Theoretical justification for cross-sensor generalization
+- Publication-quality figures
+===========================================================================
